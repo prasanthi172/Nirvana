@@ -30,7 +30,7 @@ import AnalyticsHub from './pages/AnalyticsHub';
 import ReportsCenter from './pages/ReportsCenter';
 import UserManagement from './pages/UserManagement';
 import NirvanaAssistantChat from './components/NirvanaAssistantChat';
-import { AuthProvider, useAuth, UserProfileDropdown, UserRole, ROLE_LABELS } from './context/AuthContext';
+import { AuthProvider, useAuth, UserProfileDropdown, UserRole, ROLE_LABELS, ROLE_DESCRIPTIONS } from './context/AuthContext';
 import { generateAndDownloadDashboardPdf } from './utils/pdfReportGenerator';
 
 interface SidebarItemConfig {
@@ -122,9 +122,18 @@ function RoleGuard({
 }
 
 function AuthenticatedWorkspace() {
-  const { user, loading, logAuditAction } = useAuth();
+  const {
+    user,
+    loading,
+    logAuditAction,
+    roleTransitionCount,
+    roleShiftBanner,
+    dismissRoleShiftBanner,
+    switchDemoRole,
+  } = useAuth();
   const location = useLocation();
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [switchingHeaderRole, setSwitchingHeaderRole] = useState<boolean>(false);
 
   // Public routes accessible without login
   if (location.pathname === '/welcome') {
@@ -185,12 +194,18 @@ function AuthenticatedWorkspace() {
           </Link>
         </div>
 
-        <div className="px-4 py-2.5 bg-[#0f172a]/60 border-b border-slate-700/80 flex items-center justify-between text-[11px]">
+        <div
+          key={`role-badge-${user.role}-${roleTransitionCount}`}
+          className="px-4 py-2.5 bg-[#0f172a]/60 border-b border-slate-700/80 flex items-center justify-between text-[11px] nirvana-role-context-transition"
+        >
           <span className="text-slate-400">Active Role</span>
           <span className="text-blue-400 font-semibold">{ROLE_LABELS[user.role]}</span>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+        <nav
+          key={`sidebar-nav-${user.role}-${roleTransitionCount}`}
+          className="flex-1 p-4 space-y-1 overflow-y-auto nirvana-sidebar-transition"
+        >
           {mainNavItems.map(item => (
             <NavItem
               key={item.to}
@@ -239,6 +254,36 @@ function AuthenticatedWorkspace() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Quick Demo Role Switcher Control */}
+            <div className="hidden lg:flex items-center gap-1.5 bg-[#0f172a] border border-slate-700 rounded-lg px-2.5 py-1 text-xs">
+              <span className="text-slate-400 text-[11px]">Demo Role:</span>
+              <select
+                value={user.role}
+                disabled={switchingHeaderRole}
+                onChange={async e => {
+                  const nextRole = e.target.value as UserRole;
+                  if (nextRole === user.role) return;
+                  setSwitchingHeaderRole(true);
+                  await switchDemoRole(nextRole);
+                  setSwitchingHeaderRole(false);
+                }}
+                className="bg-transparent text-blue-400 font-semibold text-xs focus:outline-none cursor-pointer"
+              >
+                <option value="ADMINISTRATOR" className="bg-[#0f172a] text-white">
+                  Administrator
+                </option>
+                <option value="MONITORING_OFFICER" className="bg-[#0f172a] text-white">
+                  Monitoring Officer
+                </option>
+                <option value="POLICY_ANALYST" className="bg-[#0f172a] text-white">
+                  Policy Analyst
+                </option>
+                <option value="VIEWER" className="bg-[#0f172a] text-white">
+                  Viewer
+                </option>
+              </select>
+            </div>
+
             {!isViewer && (
               <button
                 type="button"
@@ -266,7 +311,39 @@ function AuthenticatedWorkspace() {
         </header>
 
         <main className="flex-1 overflow-y-auto p-6 bg-[#0f172a]">
-          <Routes>
+          {/* Subtle Role Context Shift Banner */}
+          {roleShiftBanner && (
+            <div
+              key={roleShiftBanner.timestamp}
+              className="mb-5 p-3.5 rounded-xl bg-blue-950/40 border border-blue-700/60 text-xs text-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 nirvana-role-context-transition"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-blue-400">
+                  Role Context Active: {ROLE_LABELS[roleShiftBanner.toRole]}
+                </span>
+                <span className="text-slate-500">·</span>
+                <span className="text-white font-medium">{roleShiftBanner.userName}</span>
+                <span className="text-slate-500 hidden md:inline">·</span>
+                <span className="text-slate-300 hidden md:inline">
+                  {ROLE_DESCRIPTIONS[roleShiftBanner.toRole]}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={dismissRoleShiftBanner}
+                className="text-[11px] text-slate-400 hover:text-white self-end sm:self-center shrink-0"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Keyed View Transition Wrapper: fades in smoothly on route navigation OR role switch */}
+          <div
+            key={`${location.pathname}-${user.role}-${roleTransitionCount}`}
+            className="nirvana-view-transition"
+          >
+            <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/project-details" element={<Projects />} />
@@ -337,7 +414,8 @@ function AuthenticatedWorkspace() {
               }
             />
             <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+            </Routes>
+          </div>
         </main>
       </div>
       <NirvanaAssistantChat />

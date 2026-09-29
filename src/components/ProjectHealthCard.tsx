@@ -45,7 +45,75 @@ interface ProjectHealthCardProps {
   totalRevisedCost: number;
 }
 
-type HealthFilter = 'all' | 'over_budget' | 'delayed' | 'on_track';
+type HealthFilter = 'all' | 'at_risk' | 'over_budget' | 'delayed' | 'on_track';
+
+export type ProjectHealthStatusType = 'Critical' | 'At Risk' | 'Delayed' | 'On Track';
+
+export function getProjectHealthStatus(project: {
+  overall_risk_score?: number;
+  cost_overrun_pct?: number;
+  time_overrun_days?: number;
+  risk_level?: string;
+}): ProjectHealthStatusType {
+  const risk = project.overall_risk_score ?? 0;
+  const costOverrun = project.cost_overrun_pct ?? 0;
+  const delayDays = project.time_overrun_days ?? 0;
+
+  if (risk >= 75 || project.risk_level === 'CRITICAL' || (costOverrun > 50 && delayDays > 365)) {
+    return 'Critical';
+  }
+  if (risk >= 50 || project.risk_level === 'HIGH' || costOverrun > 25) {
+    return 'At Risk';
+  }
+  if (delayDays > 0 || costOverrun > 10) {
+    return 'Delayed';
+  }
+  return 'On Track';
+}
+
+export function ProjectHealthStatusBadge({
+  project,
+}: {
+  project: {
+    overall_risk_score?: number;
+    cost_overrun_pct?: number;
+    time_overrun_days?: number;
+    risk_level?: string;
+  };
+}) {
+  const status = getProjectHealthStatus(project);
+
+  if (status === 'Critical') {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-red-500/15 text-red-400 border border-red-500/35 whitespace-nowrap">
+        <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+        Critical
+      </span>
+    );
+  }
+  if (status === 'At Risk') {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-orange-500/15 text-orange-300 border border-orange-500/35 whitespace-nowrap">
+        <span className="w-1.5 h-1.5 rounded-full bg-orange-400" />
+        At Risk
+      </span>
+    );
+  }
+  if (status === 'Delayed') {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/35 whitespace-nowrap">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+        Delayed
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/35 whitespace-nowrap">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+      On Track
+    </span>
+  );
+}
 
 function RiskStatusBadge({ score, level }: { score: number; level?: string }) {
   const tier =
@@ -139,10 +207,15 @@ export default function ProjectHealthCard({
 
   const filteredWatchlist = useMemo(() => {
     const list = health.watchlist || [];
+    if (filter === 'at_risk') {
+      return list.filter(p => {
+        const st = getProjectHealthStatus(p);
+        return st === 'At Risk' || st === 'Critical';
+      });
+    }
     if (filter === 'over_budget') return list.filter(p => p.cost_overrun_pct > 5);
-    if (filter === 'delayed') return list.filter(p => p.time_overrun_days > 0);
-    if (filter === 'on_track')
-      return list.filter(p => p.cost_overrun_pct <= 5 && p.time_overrun_days === 0);
+    if (filter === 'delayed') return list.filter(p => getProjectHealthStatus(p) === 'Delayed' || p.time_overrun_days > 0);
+    if (filter === 'on_track') return list.filter(p => getProjectHealthStatus(p) === 'On Track');
     return list;
   }, [health.watchlist, filter]);
 
@@ -161,11 +234,12 @@ export default function ProjectHealthCard({
           </p>
         </div>
 
-        <div className="flex items-center bg-[#0f172a] p-1 rounded-lg border border-slate-700/80 self-start lg:self-auto">
+        <div className="flex flex-wrap items-center bg-[#0f172a] p-1 rounded-lg border border-slate-700/80 self-start lg:self-auto">
           {[
             { id: 'all', label: 'All Monitored' },
+            { id: 'at_risk', label: 'At Risk' },
+            { id: 'delayed', label: 'Delayed' },
             { id: 'over_budget', label: 'Cost Escalated' },
-            { id: 'delayed', label: 'Schedule Delayed' },
             { id: 'on_track', label: 'On Track' },
           ].map(tab => (
             <button
@@ -288,6 +362,7 @@ export default function ProjectHealthCard({
               <tr>
                 <th className="py-2.5 pr-3 font-medium">Project Code & Name</th>
                 <th className="py-2.5 px-3 font-medium">Sector</th>
+                <th className="py-2.5 px-3 font-medium">Health Status</th>
                 <th className="py-2.5 px-3 font-medium">Aggregate Risk Status</th>
                 <th className="py-2.5 px-3 font-medium">Projected Completion</th>
                 <th className="py-2.5 px-3 font-medium">Schedule Status</th>
@@ -296,7 +371,7 @@ export default function ProjectHealthCard({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/50">
-              {filteredWatchlist.slice(0, 8).map(item => (
+              {filteredWatchlist.slice(0, 10).map(item => (
                 <tr key={item.id} className="hover:bg-[#0f172a]/50 transition-colors">
                   <td className="py-2.5 pr-3 max-w-xs">
                     <div className="font-medium text-white truncate" title={item.name}>
@@ -305,6 +380,9 @@ export default function ProjectHealthCard({
                     </div>
                   </td>
                   <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">{item.sector}</td>
+                  <td className="py-2.5 px-3">
+                    <ProjectHealthStatusBadge project={item} />
+                  </td>
                   <td className="py-2.5 px-3">
                     <RiskStatusBadge score={item.overall_risk_score} level={item.risk_level} />
                   </td>

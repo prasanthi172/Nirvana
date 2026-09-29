@@ -100,6 +100,52 @@
         }
       },
       "required": ["uid", "grantedBy", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable system activity audit log entry recording user, role, action taken, details, and server timestamp.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the acting user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the official who performed the action (PII-free).",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "role": {
+          "type": "string",
+          "description": "Role of the user when the action was performed.",
+          "enum": ["ADMINISTRATOR", "MONITORING_OFFICER", "POLICY_ANALYST", "VIEWER", "SYSTEM"],
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "action": {
+          "type": "string",
+          "description": "System action identifier (e.g. LOGIN, LOGOUT, VIEW_PROJECT, EXPORT_REPORT, UPLOAD_DATA, CHANGE_USER_ROLE).",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Z0-9_]+$"
+        },
+        "details": {
+          "type": "string",
+          "description": "Human-readable description of the action taken.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server timestamp when the audit log entry was recorded."
+        }
+      },
+      "required": ["uid", "userName", "role", "action", "details", "createdAt"]
     }
   },
   "firestore": {
@@ -114,6 +160,10 @@
     "/admins/{adminId}": {
       "schema": { "$ref": "#/entities/AdminRecord" },
       "description": "Stores administrator membership documents."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Stores immutable system audit log records queried by the Administrator AuditLogTable."
     }
   }
 }

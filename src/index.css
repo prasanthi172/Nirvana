@@ -44,3 +44,57 @@
     @apply bg-[#0f172a] text-slate-200 font-sans antialiased;
   }
 }
+
+@keyframes nirvanaViewFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes nirvanaRoleContextFade {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes nirvanaSidebarItemFade {
+  0% {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.nirvana-view-transition {
+  animation: nirvanaViewFadeIn 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.nirvana-role-context-transition {
+  animation: nirvanaRoleContextFade 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.nirvana-sidebar-transition {
+  animation: nirvanaSidebarItemFade 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nirvana-view-transition,
+  .nirvana-role-context-transition,
+  .nirvana-sidebar-transition {
+    animation: none !important;
+    transform: none !important;
+  }
+}

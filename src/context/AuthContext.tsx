@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { Shield, User, LogOut, Settings, ChevronDown, CheckCircle2, X, Building2, Mail, BadgeCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { writeAuditLogToFirestore } from '../components/AuditLogTable';
 
 export type UserRole = 'ADMINISTRATOR' | 'MONITORING_OFFICER' | 'POLICY_ANALYST' | 'VIEWER';
 
@@ -29,10 +30,29 @@ export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
   VIEWER: 'Read-only access to national infrastructure dashboards, project explorer, project details, and basic analytics.',
 };
 
+export const DEMO_ROLE_EMAILS: Record<UserRole, string> = {
+  ADMINISTRATOR: 'admin@nirvana.demo',
+  MONITORING_OFFICER: 'officer@nirvana.demo',
+  POLICY_ANALYST: 'analyst@nirvana.demo',
+  VIEWER: 'viewer@nirvana.demo',
+};
+
+export interface RoleShiftNotification {
+  fromRole?: UserRole;
+  toRole: UserRole;
+  userName: string;
+  organization: string;
+  timestamp: number;
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
   loading: boolean;
+  roleTransitionCount: number;
+  roleShiftBanner: RoleShiftNotification | null;
+  dismissRoleShiftBanner: () => void;
+  switchDemoRole: (targetRole: UserRole) => Promise<boolean>;
   login: (email: string, password: string, isDemoQuickLogin?: boolean) => Promise<{ ok: boolean; error?: string; user?: AuthUser }>;
   register: (payload: {
     name: string;
@@ -76,6 +96,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [editOrg, setEditOrg] = useState<string>('');
   const [savingProfile, setSavingProfile] = useState<boolean>(false);
   const [profileNotice, setProfileNotice] = useState<string | null>(null);
+  const [roleTransitionCount, setRoleTransitionCount] = useState<number>(0);
+  const [roleShiftBanner, setRoleShiftBanner] = useState<RoleShiftNotification | null>(null);
+
+  const dismissRoleShiftBanner = useCallback(() => {
+    setRoleShiftBanner(null);
+  }, []);
+
+  useEffect(() => {
+    if (!roleShiftBanner) return;
+    const timer = setTimeout(() => {
+      setRoleShiftBanner(null);
+    }, 4200);
+    return () => clearTimeout(timer);
+  }, [roleShiftBanner]);
 
   // Verify token session on mount
   useEffect(() => {
@@ -126,15 +160,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!res.ok) {
         return { ok: false, error: data.error || 'Authentication failed.' };
       }
+      const previousRole = user?.role;
       setToken(data.token);
       setUser(data.user);
+      setRoleTransitionCount(c => c + 1);
+      if (data.user) {
+        setRoleShiftBanner({
+          fromRole: previousRole,
+          toRole: data.user.role,
+          userName: data.user.name,
+          organization: data.user.organization,
+          timestamp: Date.now(),
+        });
+      }
       localStorage.setItem(STORAGE_TOKEN_KEY, data.token);
       localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(data.user));
       return { ok: true, user: data.user };
     } catch (err: any) {
       return { ok: false, error: err?.message || 'Network error during login.' };
     }
-  }, []);
+  }, [user?.role]);
+
+  const switchDemoRole = useCallback(
+    async (targetRole: UserRole) => {
+      const demoEmail = DEMO_ROLE_EMAILS[targetRole];
+      if (!demoEmail) return false;
+      const res = await login(demoEmail, '', true);
+      return res.ok;
+    },
+    [login]
+  );
 
   const register = useCallback(
     async (payload: {
@@ -210,6 +265,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logAuditAction = useCallback(
     async (action: string, details: string) => {
+      if (user) {
+        writeAuditLogToFirestore({
+          userName: user.name,
+          role: user.role,
+          action,
+          details,
+        }).catch(() => {});
+      }
       if (!token) return;
       try {
         await fetch('/api/audit/log', {
@@ -224,7 +287,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Non-blocking audit logging
       }
     },
-    [token]
+    [token, user]
   );
 
   const openProfileModal = useCallback(
@@ -257,6 +320,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         token,
         loading,
+        roleTransitionCount,
+        roleShiftBanner,
+        dismissRoleShiftBanner,
+        switchDemoRole,
         login,
         register,
         logout,
@@ -443,8 +510,9 @@ export function useAuth() {
  * Displays User Name, Email, Role, and Dropdown with Profile, Settings, Logout
  */
 export function UserProfileDropdown() {
-  const { user, logout, openProfileModal } = useAuth();
+  const { user, logout, openProfileModal, switchDemoRole } = useAuth();
   const [open, setOpen] = useState(false);
+  const [switchingRole, setSwitchingRole] = useState<UserRole | null>(null);
   const navigate = useNavigate();
 
   if (!user) return null;
@@ -460,6 +528,20 @@ export function UserProfileDropdown() {
     setOpen(false);
     await logout();
     navigate('/welcome');
+  };
+
+  const handleQuickRoleSwitch = async (role: UserRole) => {
+    if (role === user.role) {
+      setOpen(false);
+      return;
+    }
+    setSwitchingRole(role);
+    const ok = await switchDemoRole(role);
+    setSwitchingRole(null);
+    setOpen(false);
+    if (ok) {
+      navigate('/');
+    }
   };
 
   return (
@@ -521,6 +603,40 @@ export function UserProfileDropdown() {
                 <Settings size={14} className="text-slate-400" />
                 <span>Settings</span>
               </button>
+
+              <div className="my-1 border-t border-slate-700/70" />
+
+              {/* Demo Session Role Switcher */}
+              <div className="px-3 py-1.5">
+                <div className="text-[10px] font-semibold text-slate-400 mb-1.5">
+                  Demo Session Role Switcher
+                </div>
+                <div className="grid grid-cols-1 gap-1">
+                  {(['ADMINISTRATOR', 'MONITORING_OFFICER', 'POLICY_ANALYST', 'VIEWER'] as UserRole[]).map(r => {
+                    const isCurrent = user.role === r;
+                    return (
+                      <button
+                        key={r}
+                        type="button"
+                        disabled={switchingRole !== null}
+                        onClick={() => handleQuickRoleSwitch(r)}
+                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-[11px] transition-colors ${
+                          isCurrent
+                            ? 'bg-blue-600/25 text-blue-300 font-semibold border border-blue-500/40'
+                            : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                        }`}
+                      >
+                        <span>{ROLE_LABELS[r]}</span>
+                        {isCurrent ? (
+                          <span className="text-[10px] text-emerald-400">Active</span>
+                        ) : switchingRole === r ? (
+                          <span className="text-[10px] text-blue-400">Switching…</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
               <div className="my-1 border-t border-slate-700/70" />
 

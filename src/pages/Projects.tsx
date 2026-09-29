@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Search, Download, X, FileText, MapPin, Building2, Calendar } from 'lucide-react';
+import { Download, X, MapPin, Building2, Calendar } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import ProjectHealthIndexRing, {
   calculateProjectHealthIndex,
   ProjectHealthMetrics,
 } from '../components/ProjectHealthIndexRing';
+import ProjectSearchBar, { SearchScope } from '../components/ProjectSearchBar';
 import { useAuth } from '../context/AuthContext';
 
 export default function Projects() {
@@ -12,6 +13,8 @@ export default function Projects() {
   const location = useLocation();
   const [projects, setProjects] = useState<any[]>([]);
   const [search, setSearch] = useState('');
+  const [searchScope, setSearchScope] = useState<SearchScope>('ALL');
+  const [locationFilter, setLocationFilter] = useState('All Locations');
   const [sectorFilter, setSectorFilter] = useState('All Sectors');
   const [riskFilter, setRiskFilter] = useState('ALL');
   const [healthFilter, setHealthFilter] = useState<'ALL' | 'Optimal' | 'Stable' | 'Strained' | 'Distressed'>('ALL');
@@ -49,20 +52,46 @@ export default function Projects() {
     return ['All Sectors', ...Array.from(new Set(projects.map(p => p.sector)))];
   }, [projects]);
 
+  const locations = useMemo(() => {
+    const map = new Map<string, number>();
+    projects.forEach(p => {
+      const st = p.state || 'Multi-State';
+      map.set(st, (map.get(st) || 0) + 1);
+    });
+    return Array.from(map.entries())
+      .map(([state, count]) => ({ state, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [projects]);
+
   const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
     return enrichedProjects.filter(p => {
-      const matchesSearch =
-        !search.trim() ||
-        p.name.toLowerCase().includes(search.toLowerCase()) ||
-        p.id.toLowerCase().includes(search.toLowerCase()) ||
-        (p.agency && p.agency.toLowerCase().includes(search.toLowerCase())) ||
-        p.ministry.toLowerCase().includes(search.toLowerCase());
+      let matchesSearch = true;
+      if (q) {
+        const nameMatch = (p.name || '').toLowerCase().includes(q);
+        const idMatch = (p.id || '').toLowerCase().includes(q);
+        const locationMatch = (p.state || '').toLowerCase().includes(q);
+        const agencyMatch = (p.agency || '').toLowerCase().includes(q);
+        const ministryMatch = (p.ministry || '').toLowerCase().includes(q);
+
+        if (searchScope === 'NAME') {
+          matchesSearch = nameMatch;
+        } else if (searchScope === 'ID') {
+          matchesSearch = idMatch;
+        } else if (searchScope === 'LOCATION') {
+          matchesSearch = locationMatch || nameMatch;
+        } else {
+          matchesSearch = nameMatch || idMatch || locationMatch || agencyMatch || ministryMatch;
+        }
+      }
+
+      const matchesLocation = locationFilter === 'All Locations' || p.state === locationFilter;
       const matchesSector = sectorFilter === 'All Sectors' || p.sector === sectorFilter;
       const matchesRisk = riskFilter === 'ALL' || p.risk_level === riskFilter;
       const matchesHealth = healthFilter === 'ALL' || p.healthMetrics.statusLabel === healthFilter;
-      return matchesSearch && matchesSector && matchesRisk && matchesHealth;
+      return matchesSearch && matchesLocation && matchesSector && matchesRisk && matchesHealth;
     });
-  }, [enrichedProjects, search, sectorFilter, riskFilter, healthFilter]);
+  }, [enrichedProjects, search, searchScope, locationFilter, sectorFilter, riskFilter, healthFilter]);
 
   const cohortSummary = useMemo(() => {
     const count = Math.max(1, filtered.length);
@@ -98,6 +127,22 @@ export default function Projects() {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pagedProjects = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  const highlightMatch = (text: string, queryStr: string) => {
+    const cleanQuery = queryStr.trim();
+    if (!cleanQuery || !text) return text;
+    const escaped = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const parts = String(text).split(new RegExp(`(${escaped})`, 'gi'));
+    return parts.map((part, idx) =>
+      part.toLowerCase() === cleanQuery.toLowerCase() ? (
+        <mark key={idx} className="bg-blue-500/30 text-blue-200 px-0.5 rounded">
+          {part}
+        </mark>
+      ) : (
+        part
+      )
+    );
+  };
 
   const handleExport = () => {
     if (!filtered.length) return;
@@ -350,66 +395,51 @@ export default function Projects() {
       </div>
 
       <div className="bg-[#1e293b] rounded-xl border border-slate-700 overflow-hidden">
-        <div className="p-4 border-b border-slate-700 flex flex-col md:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
-            <input
-              type="text"
-              value={search}
-              onChange={e => {
-                setSearch(e.target.value);
-                setPage(1);
-              }}
-              placeholder="Search by Project Name, Project Code, Implementing Agency, or Ministry..."
-              className="w-full bg-[#0f172a] border border-slate-700 rounded-lg pl-9 pr-4 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-            />
-          </div>
-
-          <select
-            value={sectorFilter}
-            onChange={e => {
-              setSectorFilter(e.target.value);
-              setPage(1);
-            }}
-            className="bg-[#0f172a] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
-          >
-            {sectors.map(s => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={healthFilter}
-            onChange={e => {
-              setHealthFilter(e.target.value as any);
-              setPage(1);
-            }}
-            className="bg-[#0f172a] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
-          >
-            <option value="ALL">All Health Index Tiers</option>
-            <option value="Optimal">Optimal Health (80–100)</option>
-            <option value="Stable">Stable Health (60–79)</option>
-            <option value="Strained">Strained Health (40–59)</option>
-            <option value="Distressed">Distressed Health (0–39)</option>
-          </select>
-
-          <select
-            value={riskFilter}
-            onChange={e => {
-              setRiskFilter(e.target.value);
-              setPage(1);
-            }}
-            className="bg-[#0f172a] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
-          >
-            <option value="ALL">All Risk Levels</option>
-            <option value="CRITICAL">Critical (75–100)</option>
-            <option value="HIGH">High (50–74)</option>
-            <option value="MODERATE">Moderate (25–49)</option>
-            <option value="LOW">Low (0–24)</option>
-          </select>
-        </div>
+        <ProjectSearchBar
+          searchQuery={search}
+          onSearchChange={val => {
+            setSearch(val);
+            setPage(1);
+          }}
+          searchScope={searchScope}
+          onScopeChange={scope => {
+            setSearchScope(scope);
+            setPage(1);
+          }}
+          locations={locations}
+          selectedLocation={locationFilter}
+          onLocationChange={loc => {
+            setLocationFilter(loc);
+            setPage(1);
+          }}
+          sectors={sectors}
+          selectedSector={sectorFilter}
+          onSectorChange={sec => {
+            setSectorFilter(sec);
+            setPage(1);
+          }}
+          selectedHealthTier={healthFilter}
+          onHealthTierChange={tier => {
+            setHealthFilter(tier);
+            setPage(1);
+          }}
+          selectedRiskLevel={riskFilter}
+          onRiskLevelChange={risk => {
+            setRiskFilter(risk);
+            setPage(1);
+          }}
+          matchedCount={filtered.length}
+          totalCount={projects.length}
+          onResetAll={() => {
+            setSearch('');
+            setSearchScope('ALL');
+            setLocationFilter('All Locations');
+            setSectorFilter('All Sectors');
+            setHealthFilter('ALL');
+            setRiskFilter('ALL');
+            setPage(1);
+          }}
+        />
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs text-slate-300 tabular-nums">
@@ -428,27 +458,67 @@ export default function Projects() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/70">
-              {pagedProjects.map((p: any) => {
-                const hm: ProjectHealthMetrics = p.healthMetrics;
-                return (
-                  <tr
-                    key={p.id}
-                    onClick={() => handleSelectProject(p)}
-                    className="hover:bg-[#0f172a]/50 transition-colors cursor-pointer"
-                  >
-                    <td className="px-4 py-3 font-medium text-blue-400 whitespace-nowrap">{p.id}</td>
-                    <td className="px-4 py-3 max-w-xs">
-                      <div className="text-white font-medium truncate" title={p.name}>
-                        {p.name}
+              {pagedProjects.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-6 py-12 text-center text-slate-400">
+                    <div className="max-w-md mx-auto space-y-2">
+                      <div className="text-sm font-semibold text-white">
+                        No infrastructure projects match your search criteria
                       </div>
-                      <div className="text-[11px] text-slate-400 truncate">
-                        {p.agency || p.ministry}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-slate-200">{p.sector}</div>
-                      <div className="text-[11px] text-slate-400">{p.state}</div>
-                    </td>
+                      <p className="text-xs text-slate-400">
+                        Try adjusting your search query ({search || 'none'}), field scope ({searchScope}), or location/sector filters.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearch('');
+                          setSearchScope('ALL');
+                          setLocationFilter('All Locations');
+                          setSectorFilter('All Sectors');
+                          setHealthFilter('ALL');
+                          setRiskFilter('ALL');
+                          setPage(1);
+                        }}
+                        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-medium transition-colors"
+                      >
+                        Reset Search & Filters
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                pagedProjects.map((p: any) => {
+                  const hm: ProjectHealthMetrics = p.healthMetrics;
+                  return (
+                    <tr
+                      key={p.id}
+                      onClick={() => handleSelectProject(p)}
+                      className="hover:bg-[#0f172a]/50 transition-colors cursor-pointer"
+                    >
+                      <td className="px-4 py-3 font-medium text-blue-400 whitespace-nowrap">
+                        {searchScope === 'ALL' || searchScope === 'ID' ? highlightMatch(p.id, search) : p.id}
+                      </td>
+                      <td className="px-4 py-3 max-w-xs">
+                        <div className="text-white font-medium truncate" title={p.name}>
+                          {searchScope === 'ALL' || searchScope === 'NAME' || searchScope === 'LOCATION'
+                            ? highlightMatch(p.name, search)
+                            : p.name}
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate">
+                          {searchScope === 'ALL' ? highlightMatch(p.agency || p.ministry, search) : p.agency || p.ministry}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="text-slate-200">{p.sector}</div>
+                        <div className="text-[11px] text-slate-400 flex items-center gap-1">
+                          <MapPin size={10} className="text-slate-500 shrink-0" />
+                          <span>
+                            {searchScope === 'ALL' || searchScope === 'LOCATION'
+                              ? highlightMatch(p.state, search)
+                              : p.state}
+                          </span>
+                        </div>
+                      </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <ProjectHealthIndexRing
                         score={hm.healthIndex}
@@ -489,26 +559,27 @@ export default function Projects() {
                       <div>Orig: {p.original_commissioning || 'N/A'}</div>
                       <div className="text-slate-400">Rev: {p.revised_commissioning || 'Unrevised'}</div>
                     </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      <Link
-                        to="/risk"
-                        onClick={e => e.stopPropagation()}
-                        className={`font-semibold ${
-                          p.risk_level === 'CRITICAL'
-                            ? 'text-red-400'
-                            : p.risk_level === 'HIGH'
-                            ? 'text-orange-400'
-                            : p.risk_level === 'MODERATE'
-                            ? 'text-yellow-400'
-                            : 'text-green-400'
-                        }`}
-                      >
-                        {p.overall_risk_score} · {p.risk_level}
-                      </Link>
-                    </td>
-                  </tr>
-                );
-              })}
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <Link
+                          to="/risk"
+                          onClick={e => e.stopPropagation()}
+                          className={`font-semibold ${
+                            p.risk_level === 'CRITICAL'
+                              ? 'text-red-400'
+                              : p.risk_level === 'HIGH'
+                              ? 'text-orange-400'
+                              : p.risk_level === 'MODERATE'
+                              ? 'text-yellow-400'
+                              : 'text-green-400'
+                          }`}
+                        >
+                          {p.overall_risk_score} · {p.risk_level}
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

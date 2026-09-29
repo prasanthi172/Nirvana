@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, ShieldCheck, Database, Cpu, ClipboardList, Search, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { RefreshCw, ShieldCheck, Database, Cpu, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import AuditLogTable from '../components/AuditLogTable';
 
 interface AuditLogEntry {
   id: string;
@@ -232,77 +233,8 @@ export default function Admin() {
         </div>
       )}
 
-      {/* Institutional Audit Log (Section 14) */}
-      <div className="bg-[#1e293b] border border-slate-700 rounded-xl p-6 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-700">
-          <div>
-            <h3 className="text-base font-semibold text-white flex items-center gap-2">
-              <ClipboardList size={18} className="text-blue-400" />
-              System Activity & Institutional Audit Log
-            </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Immutable chronological record of user authentication, project inspections, report exports, dataset uploads, and role changes.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="relative">
-              <Search size={13} className="text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Filter by user, email, or details..."
-                className="bg-[#0f172a] border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
-              />
-            </div>
-
-            <select
-              value={actionFilter}
-              onChange={e => setActionFilter(e.target.value)}
-              className="bg-[#0f172a] border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
-            >
-              {actionTypes.map(act => (
-                <option key={act} value={act}>
-                  {act === 'ALL' ? 'All Actions' : act}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-300 tabular-nums">
-            <thead className="text-slate-400 border-b border-slate-700">
-              <tr>
-                <th className="py-2.5 pr-4">Timestamp</th>
-                <th className="py-2.5 px-3">User</th>
-                <th className="py-2.5 px-3">Role</th>
-                <th className="py-2.5 px-3">Action</th>
-                <th className="py-2.5 pl-3">Event Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-700/50">
-              {filteredLogs.map(log => (
-                <tr key={log.id} className="hover:bg-slate-800/40">
-                  <td className="py-2.5 pr-4 text-slate-400 whitespace-nowrap">
-                    {new Date(log.timestamp).toLocaleString()}
-                  </td>
-                  <td className="py-2.5 px-3">
-                    <div className="font-medium text-white">{log.userName}</div>
-                    <div className="text-[11px] font-mono text-slate-400">{log.userEmail}</div>
-                  </td>
-                  <td className="py-2.5 px-3 text-blue-400 font-medium whitespace-nowrap">{log.role}</td>
-                  <td className="py-2.5 px-3 font-mono font-semibold text-amber-300 whitespace-nowrap">
-                    {log.action}
-                  </td>
-                  <td className="py-2.5 pl-3 text-slate-300">{log.details}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {/* Institutional Audit Log Table (Firestore + Server Telemetry) */}
+      <AuditLogTable initialServerLogs={auditLogs} />
     </div>
   );
 }

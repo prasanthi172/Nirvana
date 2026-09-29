@@ -31,6 +31,10 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'prasanthipothireddi728@gmail.com';
+    }
+
     function isAdmin() {
       return isVerifiedUser() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
@@ -70,6 +74,25 @@ service cloud.firestore {
         data.uid == adminId &&
         data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128 &&
         data.grantedBy == request.auth.uid &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['uid', 'userName', 'role', 'action', 'details', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'userName', 'role', 'action', 'details', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid == request.auth.uid &&
+        data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100 &&
+        data.role is string && data.role.size() >= 1 && data.role.size() <= 40 &&
+        (
+          data.role == 'ADMINISTRATOR' ||
+          data.role == 'MONITORING_OFFICER' ||
+          data.role == 'POLICY_ANALYST' ||
+          data.role == 'VIEWER' ||
+          data.role == 'SYSTEM'
+        ) &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 64 && data.action.matches('^[A-Z0-9_]+$') &&
+        data.details is string && data.details.size() >= 1 && data.details.size() <= 300 &&
         data.createdAt is timestamp;
     }
 
@@ -152,6 +175,20 @@ service cloud.firestore {
 
       allow update: if false;
       allow delete: if isVerifiedUser() && isValidId(adminId) && isAdmin();
+    }
+
+    // Collection: /audit_logs/{logId}
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (resource.data.uid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.uid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().createdAt == request.time;
+
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(logId) && isAdmin();
     }
   }
 }

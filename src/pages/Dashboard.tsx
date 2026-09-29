@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   ShieldAlert,
   TrendingUp,
@@ -14,8 +14,14 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import ProjectHealthCard from '../components/ProjectHealthCard';
+import ProjectHealthCard, {
+  ProjectHealthStatusBadge,
+  getProjectHealthStatus,
+  ProjectHealthStatusType,
+  ProjectHealthSummaryData,
+} from '../components/ProjectHealthCard';
 import SubSectorAnomalyHeatmap from '../components/SubSectorAnomalyHeatmap';
+import DashboardSegmentationFilter, { RiskLevelSegment } from '../components/DashboardSegmentationFilter';
 import { generateAndDownloadDashboardPdf } from '../utils/pdfReportGenerator';
 import { useAuth, ROLE_LABELS } from '../context/AuthContext';
 
@@ -23,6 +29,14 @@ export default function Dashboard() {
   const { user, token, logAuditAction } = useAuth();
   const [data, setData] = useState<any>(null);
   const [adminSummary, setAdminSummary] = useState<any>(null);
+
+  // Global Dashboard Segmentation State (Sector & Risk Level)
+  const [selectedSector, setSelectedSector] = useState<string>('All Sectors');
+  const [selectedRiskLevel, setSelectedRiskLevel] = useState<RiskLevelSegment>('ALL');
+
+  // Directory table status & search state
+  const [statusFilter, setStatusFilter] = useState<'ALL' | ProjectHealthStatusType>('ALL');
+  const [projectSearch, setProjectSearch] = useState<string>('');
 
   useEffect(() => {
     fetch('/api/dashboard')
@@ -47,29 +61,203 @@ export default function Dashboard() {
     }
   }, [user, token]);
 
+  const rawProjects: any[] = useMemo(() => {
+    if (!data) return [];
+    return data.projects || data.projectHealth?.watchlist || [];
+  }, [data]);
+
+  // Available sectors with counts (respecting risk level filter so counts stay informative)
+  const sectorOptions = useMemo(() => {
+    const map = new Map<string, number>();
+    rawProjects.forEach(p => {
+      if (selectedRiskLevel === 'ALL' || p.risk_level === selectedRiskLevel) {
+        map.set(p.sector, (map.get(p.sector) || 0) + 1);
+      } else if (!map.has(p.sector)) {
+        map.set(p.sector, 0);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [rawProjects, selectedRiskLevel]);
+
+  // Risk level counts (respecting sector filter)
+  const riskCounts = useMemo<Record<RiskLevelSegment, number>>(() => {
+    const sectorMatched =
+      selectedSector === 'All Sectors'
+        ? rawProjects
+        : rawProjects.filter(p => p.sector === selectedSector);
+    return {
+      ALL: sectorMatched.length,
+      LOW: sectorMatched.filter(p => p.risk_level === 'LOW').length,
+      MODERATE: sectorMatched.filter(p => p.risk_level === 'MODERATE').length,
+      HIGH: sectorMatched.filter(p => p.risk_level === 'HIGH').length,
+      CRITICAL: sectorMatched.filter(p => p.risk_level === 'CRITICAL').length,
+    };
+  }, [rawProjects, selectedSector]);
+
+  // Segmented projects list based on selected Sector and Risk Level
+  const segmentedProjects = useMemo(() => {
+    return rawProjects.filter(p => {
+      const matchesSector = selectedSector === 'All Sectors' || p.sector === selectedSector;
+      const matchesRisk = selectedRiskLevel === 'ALL' || p.risk_level === selectedRiskLevel;
+      return matchesSector && matchesRisk;
+    });
+  }, [rawProjects, selectedSector, selectedRiskLevel]);
+
+  // Dynamically recompute Dashboard KPIs, ProjectHealthSummaryData, Risk Distribution, and Sector Breakdown from segmentedProjects
+  const segmentedAnalytics = useMemo(() => {
+    const list = segmentedProjects;
+    const count = Math.max(1, list.length);
+
+    const totalOriginalCost = list.reduce((s, p) => s + (p.original_cost || 0), 0);
+    const totalRevisedCost = list.reduce((s, p) => s + (p.revised_cost || 0), 0);
+    const totalExpenditure = list.reduce((s, p) => s + (p.expenditure || 0), 0);
+
+    const highRiskProjects = list.filter(p => (p.overall_risk_score || 0) >= 50).length;
+    const criticalEarlyWarnings = list.filter(p => (p.overall_risk_score || 0) >= 75).length;
+    const projectsWithCostOverrun = list.filter(p => (p.revised_cost || 0) > (p.original_cost || 0)).length;
+    const projectsWithTimeOverrun = list.filter(
+      p => (p.time_overrun_days ?? 0) > 0 || (p.schedule_risk_score ?? 0) >= 50
+    ).length;
+
+    const avgOverallRisk = Number(
+      (list.reduce((s, p) => s + (p.overall_risk_score || 0), 0) / count).toFixed(1)
+    );
+    const avgCostRisk = Number(
+      (list.reduce((s, p) => s + (p.cost_risk_score || 0), 0) / count).toFixed(1)
+    );
+    const avgScheduleRisk = Number(
+      (list.reduce((s, p) => s + (p.schedule_risk_score || 0), 0) / count).toFixed(1)
+    );
+    const avgProgress = Number(
+      (list.reduce((s, p) => s + (p.physical_progress || 0), 0) / count).toFixed(1)
+    );
+
+    const portfolioCostVariancePct =
+      totalOriginalCost > 0
+        ? Number((((totalRevisedCost - totalOriginalCost) / totalOriginalCost) * 100).toFixed(1))
+        : 0;
+    const portfolioExpenditurePct =
+      totalRevisedCost > 0
+        ? Number(((totalExpenditure / totalRevisedCost) * 100).toFixed(1))
+        : 0;
+
+    const withinBudgetCount = list.filter(p => (p.cost_overrun_pct || 0) <= 5).length;
+    const moderateOverrunCount = list.filter(
+      p => (p.cost_overrun_pct || 0) > 5 && (p.cost_overrun_pct || 0) <= 25
+    ).length;
+    const severeOverrunCount = list.filter(p => (p.cost_overrun_pct || 0) > 25).length;
+
+    const onScheduleCount = list.filter(p => (p.time_overrun_days ?? 0) === 0).length;
+    const delayedList = list.filter(p => (p.time_overrun_days ?? 0) > 0);
+    const avgDelayDays =
+      delayedList.length > 0
+        ? Math.round(
+            delayedList.reduce((s, p) => s + (p.time_overrun_days ?? 0), 0) / delayedList.length
+          )
+        : 0;
+
+    const riskDistribution = [
+      { name: 'Low', value: list.filter(p => p.risk_level === 'LOW').length, color: '#22c55e' },
+      { name: 'Moderate', value: list.filter(p => p.risk_level === 'MODERATE').length, color: '#eab308' },
+      { name: 'High', value: list.filter(p => p.risk_level === 'HIGH').length, color: '#f97316' },
+      { name: 'Critical', value: list.filter(p => p.risk_level === 'CRITICAL').length, color: '#ef4444' },
+    ];
+
+    const secSet = Array.from(new Set(list.map(p => p.sector)));
+    const sectorBreakdown = secSet
+      .map(sec => {
+        const secItems = list.filter(p => p.sector === sec);
+        return {
+          name: sec.length > 18 ? sec.slice(0, 16) + '…' : sec,
+          fullName: sec,
+          cost: Math.round(secItems.reduce((s, p) => s + (p.original_cost || 0), 0)),
+          revised: Math.round(secItems.reduce((s, p) => s + (p.revised_cost || 0), 0)),
+          count: secItems.length,
+        };
+      })
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, 8);
+
+    const projectHealth: ProjectHealthSummaryData = {
+      avgOverallRisk,
+      avgCostRisk,
+      avgScheduleRisk,
+      avgProgress,
+      portfolioCostVariancePct,
+      portfolioExpenditurePct,
+      withinBudgetCount,
+      moderateOverrunCount,
+      severeOverrunCount,
+      onScheduleCount,
+      delayedCount: delayedList.length,
+      avgDelayDays,
+      medianProjectedCompletion: data?.projectHealth?.medianProjectedCompletion || '31/03/2027 (Q4 FY27)',
+      watchlist: list.slice(0, 30).map(p => ({
+        id: p.id,
+        name: p.name,
+        sector: p.sector,
+        ministry: p.ministry,
+        state: p.state,
+        original_cost: p.original_cost,
+        revised_cost: p.revised_cost,
+        expenditure: p.expenditure,
+        expenditure_pct: p.expenditure_pct,
+        physical_progress: p.physical_progress,
+        cost_overrun_pct: p.cost_overrun_pct,
+        time_overrun_days: p.time_overrun_days ?? 0,
+        projected_completion: p.revised_commissioning || p.original_commissioning || '31/03/2027',
+        original_completion: p.original_commissioning || 'N/A',
+        overall_risk_score: p.overall_risk_score,
+        risk_level: p.risk_level,
+      })),
+    };
+
+    return {
+      totalProjects: list.length,
+      totalOriginalCost,
+      totalRevisedCost,
+      totalExpenditure,
+      highRiskProjects,
+      criticalEarlyWarnings,
+      projectsWithCostOverrun,
+      projectsWithTimeOverrun,
+      riskDistribution,
+      sectorBreakdown,
+      projectHealth,
+    };
+  }, [segmentedProjects, data]);
+
   if (!data) return <div className="p-8 text-center text-slate-400">Loading infrastructure intelligence...</div>;
 
-  const riskData = data.riskDistribution || [
-    { name: 'Low', value: 45, color: '#22c55e' },
-    { name: 'Moderate', value: 35, color: '#eab308' },
-    { name: 'High', value: 18, color: '#f97316' },
-    { name: 'Critical', value: 6, color: '#ef4444' },
-  ];
-
-  const sectorData = data.sectorBreakdown || [
-    { name: 'Roads', cost: 12500, revised: 14200 },
-    { name: 'Railways', cost: 18400, revised: 21000 },
-    { name: 'Power', cost: 9200, revised: 10500 },
-    { name: 'Petroleum', cost: 13900, revised: 15300 },
-  ];
-
-  const allProjects: any[] = data.projects || data.projectHealth?.watchlist || [];
-  const attentionProjects = [...allProjects]
+  const attentionProjects = [...segmentedProjects]
     .filter(p => p.overall_risk_score >= 50 || p.cost_overrun_pct > 25)
     .sort((a, b) => b.overall_risk_score - a.overall_risk_score)
     .slice(0, 5);
 
-  const ministryCount = new Set(allProjects.map(p => p.ministry)).size;
+  const statusCounts = {
+    'On Track': segmentedProjects.filter(p => getProjectHealthStatus(p) === 'On Track').length,
+    Delayed: segmentedProjects.filter(p => getProjectHealthStatus(p) === 'Delayed').length,
+    'At Risk': segmentedProjects.filter(p => getProjectHealthStatus(p) === 'At Risk').length,
+    Critical: segmentedProjects.filter(p => getProjectHealthStatus(p) === 'Critical').length,
+  };
+
+  const filteredDashboardProjects = segmentedProjects
+    .filter(p => {
+      const matchesStatus = statusFilter === 'ALL' || getProjectHealthStatus(p) === statusFilter;
+      const q = projectSearch.trim().toLowerCase();
+      const matchesQuery =
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        p.sector.toLowerCase().includes(q) ||
+        (p.state && p.state.toLowerCase().includes(q));
+      return matchesStatus && matchesQuery;
+    })
+    .slice(0, 12);
+
+  const ministryCount = new Set(segmentedProjects.map(p => p.ministry)).size;
   const isViewer = user?.role === 'VIEWER';
 
   const handleExportBrief = async () => {
@@ -78,7 +266,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-6">
+    <div key={`dashboard-role-${user?.role || 'guest'}`} className="space-y-6 nirvana-role-context-transition">
       {/* Header & Role Greeting */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-4">
         <div>
@@ -114,6 +302,26 @@ export default function Dashboard() {
       </div>
 
       {/* =====================================================================
+          PORTFOLIO SEGMENTATION FILTER COMPONENT (Sector & Risk Level)
+         ===================================================================== */}
+      <DashboardSegmentationFilter
+        sectors={sectorOptions}
+        selectedSector={selectedSector}
+        onSelectSector={setSelectedSector}
+        riskCounts={riskCounts}
+        selectedRiskLevel={selectedRiskLevel}
+        onSelectRiskLevel={setSelectedRiskLevel}
+        filteredCount={segmentedProjects.length}
+        totalCount={rawProjects.length}
+        filteredOriginalCost={segmentedAnalytics.totalOriginalCost}
+        filteredRevisedCost={segmentedAnalytics.totalRevisedCost}
+        onReset={() => {
+          setSelectedSector('All Sectors');
+          setSelectedRiskLevel('ALL');
+        }}
+      />
+
+      {/* =====================================================================
           ROLE-PERSONALIZED BRIEFING PANEL (Section 13)
          ===================================================================== */}
       {user?.role === 'MONITORING_OFFICER' && (
@@ -133,7 +341,7 @@ export default function Dashboard() {
                 to="/warnings"
                 className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 rounded-lg text-xs font-medium transition-colors flex items-center gap-1"
               >
-                <span>Early Warnings ({data.criticalEarlyWarnings})</span>
+                <span>Early Warnings ({segmentedAnalytics.criticalEarlyWarnings})</span>
                 <ArrowRight size={13} />
               </Link>
               <Link
@@ -148,23 +356,25 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 tabular-nums text-xs">
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Projects Requiring Attention</div>
-              <div className="text-xl font-bold text-amber-400 mt-1">{data.highRiskProjects}</div>
+              <div className="text-xl font-bold text-amber-400 mt-1">{segmentedAnalytics.highRiskProjects}</div>
               <div className="text-[11px] text-slate-500 mt-0.5">Risk Score ≥ 50 / 100</div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Critical Early Warnings</div>
-              <div className="text-xl font-bold text-red-400 mt-1">{data.criticalEarlyWarnings}</div>
+              <div className="text-xl font-bold text-red-400 mt-1">{segmentedAnalytics.criticalEarlyWarnings}</div>
               <div className="text-[11px] text-slate-500 mt-0.5">Multi-factor escalation alerts</div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Cost-Escalated Projects</div>
-              <div className="text-xl font-bold text-white mt-1">{data.projectsWithCostOverrun}</div>
+              <div className="text-xl font-bold text-white mt-1">{segmentedAnalytics.projectsWithCostOverrun}</div>
               <div className="text-[11px] text-slate-500 mt-0.5">Revised cost &gt; original sanction</div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Schedule-Slipped Corridors</div>
-              <div className="text-xl font-bold text-white mt-1">{data.projectsWithTimeOverrun}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Mean delay: {data.projectHealth?.avgDelayDays || 0} days</div>
+              <div className="text-xl font-bold text-white mt-1">{segmentedAnalytics.projectsWithTimeOverrun}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                Mean delay: {segmentedAnalytics.projectHealth.avgDelayDays || 0} days
+              </div>
             </div>
           </div>
 
@@ -179,6 +389,7 @@ export default function Dashboard() {
                     <th className="py-1.5 pr-3">Code</th>
                     <th className="py-1.5 px-3">Project Name</th>
                     <th className="py-1.5 px-3">Sector</th>
+                    <th className="py-1.5 px-3">Status Badge</th>
                     <th className="py-1.5 px-3 text-right">Cost Overrun</th>
                     <th className="py-1.5 px-3 text-right">Physical Progress</th>
                     <th className="py-1.5 pl-3 text-right">Risk Score</th>
@@ -190,6 +401,9 @@ export default function Dashboard() {
                       <td className="py-2 pr-3 font-mono text-blue-400">{p.id}</td>
                       <td className="py-2 px-3 text-white font-medium">{p.name}</td>
                       <td className="py-2 px-3 text-slate-400">{p.sector}</td>
+                      <td className="py-2 px-3">
+                        <ProjectHealthStatusBadge project={p} />
+                      </td>
                       <td className="py-2 px-3 text-right text-amber-400">+{p.cost_overrun_pct}%</td>
                       <td className="py-2 px-3 text-right">{p.physical_progress}%</td>
                       <td className="py-2 pl-3 text-right font-bold text-red-400">{p.overall_risk_score} / 100</td>
@@ -234,8 +448,12 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 tabular-nums text-xs">
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Sector Risk Index</div>
-              <div className="text-xl font-bold text-white mt-1">{data.projectHealth?.avgOverallRisk} / 100</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Across {sectorData.length} major sectors</div>
+              <div className="text-xl font-bold text-white mt-1">
+                {segmentedAnalytics.projectHealth.avgOverallRisk} / 100
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                Across {segmentedAnalytics.sectorBreakdown.length} active sectors
+              </div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Central Ministries</div>
@@ -245,21 +463,27 @@ export default function Dashboard() {
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Net Cost Escalation</div>
               <div className="text-xl font-bold text-amber-400 mt-1">
-                +{data.projectHealth?.portfolioCostVariancePct}%
+                +{segmentedAnalytics.projectHealth.portfolioCostVariancePct}%
               </div>
               <div className="text-[11px] text-slate-500 mt-0.5">Sanctioned vs. Revised</div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Mean Schedule Delay</div>
-              <div className="text-xl font-bold text-white mt-1">{data.projectHealth?.avgDelayDays} days</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">{data.projectHealth?.delayedCount} delayed projects</div>
+              <div className="text-xl font-bold text-white mt-1">
+                {segmentedAnalytics.projectHealth.avgDelayDays} days
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {segmentedAnalytics.projectHealth.delayedCount} delayed projects
+              </div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Expenditure Utilization</div>
               <div className="text-xl font-bold text-emerald-400 mt-1">
-                {data.projectHealth?.portfolioExpenditurePct}%
+                {segmentedAnalytics.projectHealth.portfolioExpenditurePct}%
               </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Mean Progress: {data.projectHealth?.avgProgress}%</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                Mean Progress: {segmentedAnalytics.projectHealth.avgProgress}%
+              </div>
             </div>
           </div>
         </div>
@@ -335,7 +559,7 @@ export default function Dashboard() {
               <div className="text-lg font-bold text-emerald-400 mt-1">
                 {adminSummary?.system?.status || 'OPERATIONAL'}
               </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">{data.totalProjects} active project records</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">{rawProjects.length} active project records</div>
             </div>
             <div className="bg-[#0f172a] border border-slate-800 rounded-lg p-3.5">
               <div className="text-slate-400">Data Quality Score</div>
@@ -362,26 +586,125 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* KPI Cards */}
+      {/* KPI Cards (Segmented in real time) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard title="Total Projects" value={data.totalProjects} icon={<Activity />} />
-        <KpiCard title="Total Original Cost" value={`₹${(data.totalOriginalCost / 1000).toFixed(1)}k Cr`} icon={<TrendingUp />} />
-        <KpiCard title="High-Risk Projects" value={data.highRiskProjects} alert icon={<AlertTriangle />} />
-        <KpiCard title="Critical Warnings" value={data.criticalEarlyWarnings} alert icon={<ShieldAlert />} />
+        <KpiCard title="Monitored Projects" value={segmentedAnalytics.totalProjects} icon={<Activity />} />
+        <KpiCard
+          title="Total Original Cost"
+          value={`₹${(segmentedAnalytics.totalOriginalCost / 1000).toFixed(1)}k Cr`}
+          icon={<TrendingUp />}
+        />
+        <KpiCard title="High-Risk Projects" value={segmentedAnalytics.highRiskProjects} alert icon={<AlertTriangle />} />
+        <KpiCard
+          title="Critical Warnings"
+          value={segmentedAnalytics.criticalEarlyWarnings}
+          alert
+          icon={<ShieldAlert />}
+        />
       </div>
 
-      {/* Project Health Summary Card */}
-      {data.projectHealth && (
-        <ProjectHealthCard
-          health={data.projectHealth}
-          totalProjects={data.totalProjects}
-          totalOriginalCost={data.totalOriginalCost}
-          totalRevisedCost={data.totalRevisedCost || data.totalOriginalCost}
-        />
-      )}
+      {/* Project Health Summary Card (Segmented in real time) */}
+      <ProjectHealthCard
+        health={segmentedAnalytics.projectHealth}
+        totalProjects={segmentedAnalytics.totalProjects}
+        totalOriginalCost={segmentedAnalytics.totalOriginalCost}
+        totalRevisedCost={segmentedAnalytics.totalRevisedCost || segmentedAnalytics.totalOriginalCost}
+      />
 
       {/* Real-Time Sub-Sector Anomaly Density Heatmap (D3.js) */}
-      <SubSectorAnomalyHeatmap projects={data.projects || data.projectHealth?.watchlist || []} />
+      <SubSectorAnomalyHeatmap projects={segmentedProjects} />
+
+      {/* Dashboard Project List with Color-Coded Status Badges */}
+      <div className="bg-[#1e293b] rounded-xl border border-slate-700 p-6 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-700/70">
+          <div>
+            <h3 className="text-base font-semibold text-white">
+              Monitored Infrastructure Projects — Live Health Status Directory
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Color-coded status badges indicating real-time project health across cost escalation, commissioning delay, and ML risk score.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={projectSearch}
+              onChange={e => setProjectSearch(e.target.value)}
+              placeholder="Search project, code, or sector..."
+              className="bg-[#0f172a] border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+            />
+            <div className="flex flex-wrap items-center bg-[#0f172a] p-1 rounded-lg border border-slate-700/80 text-xs">
+              {(
+                [
+                  { id: 'ALL', label: `All (${segmentedProjects.length})` },
+                  { id: 'On Track', label: `On Track (${statusCounts['On Track']})` },
+                  { id: 'Delayed', label: `Delayed (${statusCounts.Delayed})` },
+                  { id: 'At Risk', label: `At Risk (${statusCounts['At Risk']})` },
+                  { id: 'Critical', label: `Critical (${statusCounts.Critical})` },
+                ] as const
+              ).map(tab => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setStatusFilter(tab.id)}
+                  className={`px-2.5 py-1 rounded-md font-medium transition-colors whitespace-nowrap ${
+                    statusFilter === tab.id ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs text-slate-300 tabular-nums">
+            <thead className="text-slate-400 border-b border-slate-700">
+              <tr>
+                <th className="py-2.5 pr-3 font-medium">Code</th>
+                <th className="py-2.5 px-3 font-medium">Project Name</th>
+                <th className="py-2.5 px-3 font-medium">Sector & State</th>
+                <th className="py-2.5 px-3 font-medium">Health Status Badge</th>
+                <th className="py-2.5 px-3 font-medium text-right">Sanctioned vs Revised</th>
+                <th className="py-2.5 px-3 font-medium text-right">Delay</th>
+                <th className="py-2.5 px-3 font-medium text-right">Progress</th>
+                <th className="py-2.5 pl-3 font-medium text-right">Composite Risk</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-700/50">
+              {filteredDashboardProjects.map(p => (
+                <tr key={p.id} className="hover:bg-[#0f172a]/50 transition-colors">
+                  <td className="py-2.5 pr-3 font-mono text-blue-400 whitespace-nowrap">{p.id}</td>
+                  <td className="py-2.5 px-3 font-medium text-white max-w-xs truncate" title={p.name}>
+                    {p.name}
+                  </td>
+                  <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
+                    {p.sector} · {p.state}
+                  </td>
+                  <td className="py-2.5 px-3">
+                    <ProjectHealthStatusBadge project={p} />
+                  </td>
+                  <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                    ₹{Number(p.original_cost).toLocaleString()} Cr → ₹{Number(p.revised_cost).toLocaleString()} Cr
+                    {p.cost_overrun_pct > 0 && (
+                      <span className="text-amber-400 ml-1">(+{p.cost_overrun_pct}%)</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                    {(p.time_overrun_days ?? 0) > 0 ? `${p.time_overrun_days}d` : '0d'}
+                  </td>
+                  <td className="py-2.5 px-3 text-right whitespace-nowrap">{p.physical_progress}%</td>
+                  <td className="py-2.5 pl-3 text-right font-semibold text-white whitespace-nowrap">
+                    {p.overall_risk_score} / 100
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Risk Distribution */}
@@ -390,8 +713,14 @@ export default function Dashboard() {
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={riskData} innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                  {riskData.map((entry: any, index: number) => (
+                <Pie
+                  data={segmentedAnalytics.riskDistribution}
+                  innerRadius={60}
+                  outerRadius={80}
+                  paddingAngle={5}
+                  dataKey="value"
+                >
+                  {segmentedAnalytics.riskDistribution.map((entry: any, index: number) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
@@ -403,10 +732,12 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
           <div className="flex justify-center gap-4 text-xs mt-2">
-            {riskData.map((d: any) => (
+            {segmentedAnalytics.riskDistribution.map((d: any) => (
               <div key={d.name} className="flex items-center gap-1">
                 <div className="w-3 h-3 rounded-full" style={{ backgroundColor: d.color }}></div>
-                <span className="text-slate-300">{d.name}</span>
+                <span className="text-slate-300">
+                  {d.name} ({d.value})
+                </span>
               </div>
             ))}
           </div>
@@ -417,7 +748,7 @@ export default function Dashboard() {
           <h3 className="text-sm font-medium text-slate-300 mb-4">Original vs Revised Cost by Sector (Cr)</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={sectorData}>
+              <BarChart data={segmentedAnalytics.sectorBreakdown}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                 <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
                 <YAxis stroke="#94a3b8" fontSize={12} />
